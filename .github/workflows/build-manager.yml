@@ -114,7 +114,7 @@ jobs:
           test -n "$PERSONAL_KEYSTORE"
           test -n "$PERSONAL_STORE_PASS"
           printf '%s' "$PERSONAL_KEYSTORE" | base64 -d > personal.p12
-          keytool -exportcert -alias sukisu-personal -keystore personal.p12 \
+          keytool -exportcert -alias 1 -keystore personal.p12 \
             -storepass:env PERSONAL_STORE_PASS -file personal-cert.der
           SIZE_DEC=$(stat -c%s personal-cert.der)
           printf 'expected_size=0x%04x\n' "$SIZE_DEC" >> "$GITHUB_OUTPUT"
@@ -267,7 +267,7 @@ jobs:
           if [ ! -z "${{ secrets.KEYSTORE }}" ]; then
             {
               echo KEYSTORE_PASSWORD='${{ secrets.KEYSTORE_PASSWORD }}'
-              echo KEY_ALIAS='sukisu-personal'
+              echo KEY_ALIAS='1'
               echo KEY_PASSWORD='${{ secrets.KEYSTORE_PASSWORD }}'
               echo KEYSTORE_FILE='key.jks'
             } >> gradle.properties
@@ -571,7 +571,7 @@ jobs:
           PR_KEY_PASSWORD: ${{ needs.generate-key.outputs.key_password }}
 
           PROD_KEYSTORE: ${{ secrets.KEYSTORE }}
-          PROD_KEY_ALIAS: sukisu-personal
+          PROD_KEY_ALIAS: 1
           PROD_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           PROD_KEY_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
 
