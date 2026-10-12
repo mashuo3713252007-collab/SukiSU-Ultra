@@ -1,5 +1,8 @@
 name: Build Manager
 
+permissions:
+  contents: read
+
 on:
   workflow_dispatch:
   push:
@@ -46,8 +49,8 @@ jobs:
     runs-on: ubuntu-latest
 
     outputs:
-      expected_size: ${{ steps.extract.outputs.expected_size }}
-      expected_hash: ${{ steps.extract.outputs.expected_hash }}
+      expected_size: ${{ steps.extract.outputs.expected_size || steps.personal.outputs.expected_size }}
+      expected_hash: ${{ steps.extract.outputs.expected_hash || steps.personal.outputs.expected_hash }}
       keystore: ${{ steps.gen.outputs.keystore }}
       keystore_password: ${{ steps.gen.outputs.keystore_password }}
       key_password: ${{ steps.gen.outputs.key_password }}
@@ -99,6 +102,25 @@ jobs:
           echo "Certificate hash: $HASH"
 
 
+
+      - name: Extract personal signing certificate
+        if: github.event_name != 'pull_request'
+        id: personal
+        env:
+          PERSONAL_KEYSTORE: ${{ secrets.KEYSTORE }}
+          PERSONAL_STORE_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$PERSONAL_KEYSTORE"
+          test -n "$PERSONAL_STORE_PASS"
+          printf '%s' "$PERSONAL_KEYSTORE" | base64 -d > personal.p12
+          keytool -exportcert -alias sukisu-personal -keystore personal.p12 \
+            -storepass:env PERSONAL_STORE_PASS -file personal-cert.der
+          SIZE_DEC=$(stat -c%s personal-cert.der)
+          printf 'expected_size=0x%04x\n' "$SIZE_DEC" >> "$GITHUB_OUTPUT"
+          printf 'expected_hash=%s\n' "$(sha256sum personal-cert.der | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          rm -f personal.p12
+
   build-lkm:
     needs: generate-key
 
@@ -149,7 +171,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        spoofed: ["false", "true"]
+        spoofed: ["false"]
 
     defaults:
       run:
@@ -245,8 +267,8 @@ jobs:
           if [ ! -z "${{ secrets.KEYSTORE }}" ]; then
             {
               echo KEYSTORE_PASSWORD='${{ secrets.KEYSTORE_PASSWORD }}'
-              echo KEY_ALIAS='${{ secrets.KEY_ALIAS }}'
-              echo KEY_PASSWORD='${{ secrets.KEY_PASSWORD }}'
+              echo KEY_ALIAS='sukisu-personal'
+              echo KEY_PASSWORD='${{ secrets.KEYSTORE_PASSWORD }}'
               echo KEYSTORE_FILE='key.jks'
             } >> gradle.properties
 
@@ -412,7 +434,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        spoofed: ["false", "true"]
+        spoofed: ["false"]
 
     steps:
 
@@ -549,9 +571,9 @@ jobs:
           PR_KEY_PASSWORD: ${{ needs.generate-key.outputs.key_password }}
 
           PROD_KEYSTORE: ${{ secrets.KEYSTORE }}
-          PROD_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          PROD_KEY_ALIAS: sukisu-personal
           PROD_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          PROD_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          PROD_KEY_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
 
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
@@ -630,99 +652,3 @@ jobs:
 
 
 
-  # ------------------------------------------------------------
-  # Telegram upload (combined)
-  # ------------------------------------------------------------
-
-  upload-telegram:
-    needs: repack-manager
-
-    if: github.event_name != 'pull_request' &&
-        needs.repack-manager.result == 'success'
-
-    runs-on: ubuntu-latest
-
-    steps:
-
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-
-      # --------------------------------------------------------
-      # Determine whether Telegram upload is configured
-      # --------------------------------------------------------
-
-      - name: Setup need_upload
-        id: need_upload
-        run: |
-          if [ ! -z "${{ secrets.BOT_TOKEN }}" ]; then
-            echo "UPLOAD=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "UPLOAD=false" >> "$GITHUB_OUTPUT"
-          fi
-
-
-      # --------------------------------------------------------
-      # Download APK artifacts
-      # --------------------------------------------------------
-
-      - name: Download manager apk
-        if: steps.need_upload.outputs.UPLOAD == 'true'
-        uses: actions/download-artifact@v8
-        with:
-          name: Manager
-          path: apks
-
-      - name: Download manager-spoofed apk
-        if: steps.need_upload.outputs.UPLOAD == 'true'
-        uses: actions/download-artifact@v8
-        with:
-          name: Manager-spoofed
-          path: apks
-
-
-      # --------------------------------------------------------
-      # Telegram session cache
-      # --------------------------------------------------------
-
-      - name: Bot session cache
-        if: steps.need_upload.outputs.UPLOAD == 'true'
-        id: bot_session_cache
-        uses: actions/cache@v5
-        with:
-          path: scripts/ksubot.session
-          key: ${{ runner.os }}-bot-session
-
-
-      # --------------------------------------------------------
-      # Telegram upload
-      # --------------------------------------------------------
-
-      - name: Upload to telegram
-        if: steps.need_upload.outputs.UPLOAD == 'true'
-        env:
-          CHAT_ID: ${{ secrets.CHAT_ID }}
-          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          MESSAGE_THREAD_ID: ${{ secrets.MESSAGE_THREAD_ID }}
-
-          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
-          COMMIT_URL: ${{ github.event.head_commit.url }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-
-          TITLE: Manager
-          BRANCH: ${{ github.ref_name }}
-
-        run: |
-          if [ ! -z "${{ secrets.BOT_TOKEN }}" ]; then
-
-            export VERSION=$(git rev-list --count HEAD)
-
-            APKS=$(find ./apks -type f -name "*.apk" | sort)
-
-            pip3 install telethon
-
-            python3 scripts/ksubot.py $APKS
-
-          fi
